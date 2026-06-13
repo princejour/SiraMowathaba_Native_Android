@@ -1,4 +1,4 @@
-name: Build Model 1 Test APK
+name: Build Model 1 Independent APK
 
 on:
   workflow_dispatch:
@@ -45,7 +45,7 @@ jobs:
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Android project folder: $PROJECT_DIR"
 
-      - name: Convert to separate Model 1 test app
+      - name: Force independent package name
         run: |
           set -e
           cd "${{ steps.find_project.outputs.project_dir }}"
@@ -53,41 +53,68 @@ jobs:
           from pathlib import Path
           import re
 
-          new_app_id = "com.walhero.sira.model1.test"
-          new_label = "نموذج 1 - تجربة"
+          new_app_id = "com.walhero.sira.model1.independent"
+          new_label = "نموذج 1 مستقل"
 
-          gradle_files = list(Path('.').glob('app/build.gradle')) + list(Path('.').glob('app/build.gradle.kts'))
+          gradle_files = list(Path('.').rglob('build.gradle')) + list(Path('.').rglob('build.gradle.kts'))
           if not gradle_files:
-              raise SystemExit('app/build.gradle not found')
-          gf = gradle_files[0]
-          text = gf.read_text(encoding='utf-8')
+              raise SystemExit('No Gradle files found')
 
-          if 'applicationId' in text:
+          changed_app_gradle = False
+          for gf in gradle_files:
+              text = gf.read_text(encoding='utf-8')
+              original = text
+
               text = re.sub(r'applicationId\s+"[^"]+"', f'applicationId "{new_app_id}"', text)
               text = re.sub(r'applicationId\s*=\s*"[^"]+"', f'applicationId = "{new_app_id}"', text)
               text = re.sub(r"applicationId\s+'[^']+'", f"applicationId '{new_app_id}'", text)
-          else:
-              text = re.sub(r'defaultConfig\s*\{', 'defaultConfig {\n        applicationId "' + new_app_id + '"', text, count=1)
 
-          if 'versionCode' in text:
-              text = re.sub(r'versionCode\s+\d+', 'versionCode 101', text)
-              text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 101', text)
-          if 'versionName' in text:
-              text = re.sub(r'versionName\s+"[^"]+"', 'versionName "model1-test-1.0"', text)
-              text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "model1-test-1.0"', text)
-              text = re.sub(r"versionName\s+'[^']+'", "versionName 'model1-test-1.0'", text)
+              text = re.sub(r'namespace\s+"[^"]+"', f'namespace "{new_app_id}"', text)
+              text = re.sub(r'namespace\s*=\s*"[^"]+"', f'namespace = "{new_app_id}"', text)
+              text = re.sub(r"namespace\s+'[^']+'", f"namespace '{new_app_id}'", text)
 
-          gf.write_text(text, encoding='utf-8')
+              text = re.sub(r'applicationIdSuffix\s+"[^"]*"', 'applicationIdSuffix ""', text)
+              text = re.sub(r'applicationIdSuffix\s*=\s*"[^"]*"', 'applicationIdSuffix = ""', text)
+              text = re.sub(r"applicationIdSuffix\s+'[^']*'", "applicationIdSuffix ''", text)
+
+              if gf.name in ('build.gradle', 'build.gradle.kts') and gf.parent.name == 'app':
+                  if 'applicationId' not in text:
+                      if 'defaultConfig {' in text:
+                          text = text.replace('defaultConfig {', 'defaultConfig {\n        applicationId "' + new_app_id + '"', 1)
+                      elif 'defaultConfig {' not in text and 'android {' in text:
+                          text = text.replace('android {', 'android {\n    defaultConfig {\n        applicationId "' + new_app_id + '"\n    }', 1)
+                  if 'namespace' not in text:
+                      if 'android {' in text:
+                          text = text.replace('android {', 'android {\n    namespace "' + new_app_id + '"', 1)
+                  changed_app_gradle = True
+
+              if text != original:
+                  gf.write_text(text, encoding='utf-8')
+                  print('Updated', gf)
+
+          for mf in Path('.').rglob('AndroidManifest.xml'):
+              s = mf.read_text(encoding='utf-8')
+              original = s
+              s = re.sub(r'package="[^"]+"', f'package="{new_app_id}"', s)
+              s = re.sub(r'android:label="[^"]+"', f'android:label="{new_label}"', s, count=1)
+              if s != original:
+                  mf.write_text(s, encoding='utf-8')
+                  print('Updated', mf)
 
           for sp in Path('.').rglob('strings.xml'):
               s = sp.read_text(encoding='utf-8')
+              original = s
               if '<string name="app_name"' in s:
                   s = re.sub(r'<string name="app_name">.*?</string>', f'<string name="app_name">{new_label}</string>', s)
+              if s != original:
                   sp.write_text(s, encoding='utf-8')
+                  print('Updated', sp)
 
-          print('Converted to separate test app:')
-          print('applicationId =', new_app_id)
-          print('app label =', new_label)
+          if not changed_app_gradle:
+              raise SystemExit('app/build.gradle or app/build.gradle.kts not found')
+
+          print('Independent app id forced:', new_app_id)
+          print('Independent app label:', new_label)
           PY
 
       - name: Set up JDK 17
@@ -112,8 +139,22 @@ jobs:
             gradle assembleDebug
           fi
 
+      - name: Verify independent APK package
+        run: |
+          set -e
+          cd "${{ steps.find_project.outputs.project_dir }}"
+          APK_FILE="$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)"
+          echo "APK: $APK_FILE"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt | sort -V | tail -n 1)"
+          BADGING="$($AAPT dump badging "$APK_FILE")"
+          echo "$BADGING" | head -n 5
+          echo "$BADGING" | grep "package: name='com.walhero.sira.model1.independent'" || {
+            echo "ERROR: APK is not independent. Package name was not changed."
+            exit 1
+          }
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: model1-test-separate-apk
+          name: model1-independent-apk
           path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/**/*.apk
