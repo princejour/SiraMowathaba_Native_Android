@@ -52,46 +52,33 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           new_app_id = "com.walhero.sira.model1.independent"
           new_label = "نموذج 1 مستقل"
-
           gradle_files = list(Path('.').rglob('build.gradle')) + list(Path('.').rglob('build.gradle.kts'))
           if not gradle_files:
               raise SystemExit('No Gradle files found')
-
           changed_app_gradle = False
           for gf in gradle_files:
               text = gf.read_text(encoding='utf-8')
               original = text
-
               text = re.sub(r'applicationId\s+"[^"]+"', f'applicationId "{new_app_id}"', text)
               text = re.sub(r'applicationId\s*=\s*"[^"]+"', f'applicationId = "{new_app_id}"', text)
               text = re.sub(r"applicationId\s+'[^']+'", f"applicationId '{new_app_id}'", text)
-
               text = re.sub(r'namespace\s+"[^"]+"', f'namespace "{new_app_id}"', text)
               text = re.sub(r'namespace\s*=\s*"[^"]+"', f'namespace = "{new_app_id}"', text)
               text = re.sub(r"namespace\s+'[^']+'", f"namespace '{new_app_id}'", text)
-
               text = re.sub(r'applicationIdSuffix\s+"[^"]*"', 'applicationIdSuffix ""', text)
               text = re.sub(r'applicationIdSuffix\s*=\s*"[^"]*"', 'applicationIdSuffix = ""', text)
               text = re.sub(r"applicationIdSuffix\s+'[^']*'", "applicationIdSuffix ''", text)
-
               if gf.name in ('build.gradle', 'build.gradle.kts') and gf.parent.name == 'app':
-                  if 'applicationId' not in text:
-                      if 'defaultConfig {' in text:
-                          text = text.replace('defaultConfig {', 'defaultConfig {\n        applicationId "' + new_app_id + '"', 1)
-                      elif 'defaultConfig {' not in text and 'android {' in text:
-                          text = text.replace('android {', 'android {\n    defaultConfig {\n        applicationId "' + new_app_id + '"\n    }', 1)
-                  if 'namespace' not in text:
-                      if 'android {' in text:
-                          text = text.replace('android {', 'android {\n    namespace "' + new_app_id + '"', 1)
+                  if 'applicationId' not in text and 'defaultConfig {' in text:
+                      text = text.replace('defaultConfig {', 'defaultConfig {\n        applicationId "' + new_app_id + '"', 1)
+                  if 'namespace' not in text and 'android {' in text:
+                      text = text.replace('android {', 'android {\n    namespace "' + new_app_id + '"', 1)
                   changed_app_gradle = True
-
               if text != original:
                   gf.write_text(text, encoding='utf-8')
                   print('Updated', gf)
-
           for mf in Path('.').rglob('AndroidManifest.xml'):
               s = mf.read_text(encoding='utf-8')
               original = s
@@ -100,7 +87,6 @@ jobs:
               if s != original:
                   mf.write_text(s, encoding='utf-8')
                   print('Updated', mf)
-
           for sp in Path('.').rglob('strings.xml'):
               s = sp.read_text(encoding='utf-8')
               original = s
@@ -109,12 +95,82 @@ jobs:
               if s != original:
                   sp.write_text(s, encoding='utf-8')
                   print('Updated', sp)
-
           if not changed_app_gradle:
               raise SystemExit('app/build.gradle or app/build.gradle.kts not found')
-
           print('Independent app id forced:', new_app_id)
           print('Independent app label:', new_label)
+          PY
+
+      - name: Make Model 1 start with empty imported classes only
+        run: |
+          set -e
+          cd "${{ steps.find_project.outputs.project_dir }}"
+          python3 - <<'PY'
+          from pathlib import Path
+          patch = r'''
+/* MODEL1_INDEPENDENT_EMPTY_CLASSES_PATCH */
+(function(){
+  window.replaceDataWithPersonalClasses = function(){
+    const personal = (typeof getPersonalClasses === 'function') ? getPersonalClasses() : {};
+    Object.keys(data || {}).forEach(k => delete data[k]);
+    Object.keys(personal || {}).forEach(k => {
+      if(!Array.isArray(personal[k]) || personal[k].length === 0) return;
+      const classKey = (typeof normalizeClassNameForStorage === 'function') ? normalizeClassNameForStorage(k) : k;
+      if(!data[classKey]) data[classKey] = [];
+      personal[k].forEach(studentName => {
+        if(studentName && !data[classKey].includes(studentName)) data[classKey].push(studentName);
+      });
+    });
+    if(typeof applyStudentRenamesToData === 'function') applyStudentRenamesToData();
+  };
+  window.saveImportedPersonalClasses = function(personal){
+    const keys = Object.keys(personal || {});
+    if(keys.length === 0){
+      showToast('لم يتم العثور على أقسام وتلاميذ داخل الملف. تأكد من وجود عمود: القسم وعمود: اسم التلميذ','info');
+      return;
+    }
+    const clean = {};
+    keys.forEach(className => {
+      if(!Array.isArray(personal[className])) return;
+      const classKey = normalizeClassNameForStorage(className);
+      if(!clean[classKey]) clean[classKey] = [];
+      personal[className].forEach(studentName => {
+        if(studentName && !clean[classKey].includes(studentName)) clean[classKey].push(studentName);
+      });
+    });
+    savePersonalClasses(clean);
+    replaceDataWithPersonalClasses();
+    refreshClassSelectOptions(Object.keys(clean)[0] || '');
+    resetDashboard();
+    renderStudentsList();
+    renderPersonalClassesList();
+    clearImportedClassesFile();
+    showToast('تم استبدال القوائم القديمة بالقوائم الجديدة فقط','success');
+  };
+  window.clearAllPersonalClasses = function(){
+    if(!confirm('هل تريد مسح كل الأقسام المستوردة من هذا الهاتف؟')) return;
+    savePersonalClasses({});
+    replaceDataWithPersonalClasses();
+    refreshClassSelectOptions();
+    resetDashboard();
+    renderStudentsList();
+    renderPersonalClassesList();
+    showToast('تم مسح كل الأقسام. يمكنك الآن استيراد أقسام جديدة','info');
+  };
+})();
+'''
+          patched = 0
+          for html in list(Path('.').rglob('*.html')):
+              s = html.read_text(encoding='utf-8')
+              if 'MODEL1_INDEPENDENT_EMPTY_CLASSES_PATCH' in s:
+                  continue
+              if 'replaceDataWithPersonalClasses' in s and 'getPersonalClasses' in s:
+                  s = s.replace('</script>', patch + '\n</script>')
+                  html.write_text(s, encoding='utf-8')
+                  patched += 1
+                  print('Patched empty classes in', html)
+          if patched == 0:
+              raise SystemExit('No HTML app file was patched; import/default classes code not found')
           PY
 
       - name: Set up JDK 17
@@ -156,5 +212,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: model1-independent-apk
+          name: model1-independent-empty-import-apk
           path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/**/*.apk
