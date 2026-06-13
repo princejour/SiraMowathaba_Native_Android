@@ -1,0 +1,119 @@
+name: Build Model 1 Test APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find ZIP file
+        id: find_zip
+        run: |
+          set -e
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found in repository root."
+            exit 1
+          fi
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found ZIP: $ZIP_FILE"
+
+      - name: Unzip project
+        run: |
+          set -e
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "${{ steps.find_zip.outputs.zip_file }}" -d extracted
+          echo "Extracted files:"
+          find extracted -maxdepth 4 -type f | head -n 80
+
+      - name: Find Android project folder
+        id: find_project
+        run: |
+          set -e
+          PROJECT_FILE="$(find extracted -name 'settings.gradle' -o -name 'settings.gradle.kts' | head -n 1)"
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "No Android project found. settings.gradle not found."
+            exit 1
+          fi
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project folder: $PROJECT_DIR"
+
+      - name: Convert to separate Model 1 test app
+        run: |
+          set -e
+          cd "${{ steps.find_project.outputs.project_dir }}"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          new_app_id = "com.walhero.sira.model1.test"
+          new_label = "نموذج 1 - تجربة"
+
+          gradle_files = list(Path('.').glob('app/build.gradle')) + list(Path('.').glob('app/build.gradle.kts'))
+          if not gradle_files:
+              raise SystemExit('app/build.gradle not found')
+          gf = gradle_files[0]
+          text = gf.read_text(encoding='utf-8')
+
+          if 'applicationId' in text:
+              text = re.sub(r'applicationId\s+"[^"]+"', f'applicationId "{new_app_id}"', text)
+              text = re.sub(r'applicationId\s*=\s*"[^"]+"', f'applicationId = "{new_app_id}"', text)
+              text = re.sub(r"applicationId\s+'[^']+'", f"applicationId '{new_app_id}'", text)
+          else:
+              text = re.sub(r'defaultConfig\s*\{', 'defaultConfig {\n        applicationId "' + new_app_id + '"', text, count=1)
+
+          if 'versionCode' in text:
+              text = re.sub(r'versionCode\s+\d+', 'versionCode 101', text)
+              text = re.sub(r'versionCode\s*=\s*\d+', 'versionCode = 101', text)
+          if 'versionName' in text:
+              text = re.sub(r'versionName\s+"[^"]+"', 'versionName "model1-test-1.0"', text)
+              text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "model1-test-1.0"', text)
+              text = re.sub(r"versionName\s+'[^']+'", "versionName 'model1-test-1.0'", text)
+
+          gf.write_text(text, encoding='utf-8')
+
+          for sp in Path('.').rglob('strings.xml'):
+              s = sp.read_text(encoding='utf-8')
+              if '<string name="app_name"' in s:
+                  s = re.sub(r'<string name="app_name">.*?</string>', f'<string name="app_name">{new_label}</string>', s)
+                  sp.write_text(s, encoding='utf-8')
+
+          print('Converted to separate test app:')
+          print('applicationId =', new_app_id)
+          print('app label =', new_label)
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+
+      - name: Build APK
+        run: |
+          set -e
+          cd "${{ steps.find_project.outputs.project_dir }}"
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug
+          else
+            gradle assembleDebug
+          fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model1-test-separate-apk
+          path: ${{ steps.find_project.outputs.project_dir }}/app/build/outputs/apk/**/*.apk
